@@ -148,7 +148,7 @@ class DB
     }
 
     // update = careful merge removes duplicate array key ???
-    public static function updateset($table, $data, $where)
+    public static function updateset(string $table, array $data, array $where)
     {
         //merge data and where together
         $collection = array_merge($data, $where);

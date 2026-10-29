@@ -1,202 +1,191 @@
 <?php
+
+declare(strict_types=1);
+
 namespace App\Libs;
 
 /**
- * Modernised Cache Class
- * Supports: Redis, Memcached, APCu, and Disk (File) Caching
+ * Cache: APCu, Redis, Memcached, or disk.
+ * CONFIG['CACHE_TYPE'] = apcu | redis | memcached | disk
  */
 class Cache
 {
-    private string $type;
+    private string $type = 'disk';
     private string $cacheDir;
     private string $prefix;
-    private ?object $client = null;
+    private mixed $client = null;
 
     public function __construct()
     {
-        $this->cacheDir = rtrim(defined('CACHE_PATH') ? CACHE_PATH : sys_get_temp_dir(), '/');
-        $this->prefix   = (defined('CONFIG') && isset(CONFIG['SITENAME'])) ? CONFIG['SITENAME'] . '_' : 'app_';
-        $requestedType  = defined('CONFIG') && isset(CONFIG['CACHE_TYPE']) ? strtolower(trim(CONFIG['CACHE_TYPE'])) : 'disk';
+        $dir = defined('CACHE_PATH') ? CACHE_PATH : sys_get_temp_dir();
+        $this->cacheDir = rtrim((string) $dir, "/\\");
+        $this->prefix   = (defined('CONFIG') && !empty(CONFIG['SITENAME']))
+            ? preg_replace('/[^a-zA-Z0-9_-]/', '', (string) CONFIG['SITENAME']) . '_'
+            : 'app_';
 
-        switch ($requestedType) {
+        $requested = defined('CONFIG') && isset(CONFIG['CACHE_TYPE'])
+            ? strtolower(trim((string) CONFIG['CACHE_TYPE']))
+            : 'disk';
+
+        switch ($requested) {
             case 'apcu':
-                if (function_exists('apcu_enabled') && apcu_enabled()) {
+                if (extension_loaded('apcu') && function_exists('apcu_store')) {
                     $this->type = 'apcu';
                 } else {
-                    trigger_error("APCu extension is not enabled. Falling back to disk cache.", E_USER_WARNING);
-                    $this->type = 'disk';
+                    trigger_error('APCu not available; using disk cache.', E_USER_WARNING);
                 }
                 break;
 
             case 'redis':
-                if (class_exists('\Redis')) {
+                // String name avoids "Undefined type Redis" in the IDE
+                if (extension_loaded('redis') && class_exists('Redis')) {
                     try {
-                        $this->client = new \Redis();
-                        $host = CONFIG['REDIS_HOST'] ?? '127.0.0.1';
-                        $port = (int)(CONFIG['REDIS_PORT'] ?? 6379);
-                        
-                        if ($this->client->connect($host, $port, 1.5)) { // 1.5s timeout
-                            $this->type = 'redis';
-                        } else {
-                            throw new \Exception("Could not connect to Redis server.");
+                        $class  = 'Redis';
+                        $redis  = new $class();
+                        $host   = CONFIG['REDIS_HOST'] ?? '127.0.0.1';
+                        $port   = (int) (CONFIG['REDIS_PORT'] ?? 6379);
+                        if (!$redis->connect($host, $port, 1.5)) {
+                            throw new \RuntimeException('connect failed');
                         }
+                        $this->client = $redis;
+                        $this->type   = 'redis';
                     } catch (\Throwable $e) {
-                        trigger_error("Redis connection failed: " . $e->getMessage() . " Falling back to disk cache.", E_USER_WARNING);
-                        $this->type = 'disk';
+                        trigger_error('Redis failed: ' . $e->getMessage() . '; using disk.', E_USER_WARNING);
                     }
                 } else {
-                    trigger_error("Redis extension missing. Falling back to disk cache.", E_USER_WARNING);
-                    $this->type = 'disk';
+                    trigger_error('Redis extension missing; using disk cache.', E_USER_WARNING);
                 }
                 break;
 
             case 'memcached':
-            case 'memcache': // Legacy alias mapping
-                if (class_exists('\Memcached')) {
-                    $this->client = new \Memcached();
+            case 'memcache':
+                if (extension_loaded('memcached') && class_exists('Memcached')) {
                     $host = CONFIG['MEMCACHE_HOST'] ?? '127.0.0.1';
-                    $port = (int)(CONFIG['MEMCACHE_PORT'] ?? 11211);
-                    
-                    $this->client->addServer($host, $port);
-                    // Check connection status by fetching server statistics
-                    $stats = $this->client->getStats();
-                    if (isset($stats["$host:$port"]) && $stats["$host:$port"]['pid'] > 0) {
-                        $this->type = 'memcached';
+                    $port = (int) (CONFIG['MEMCACHE_PORT'] ?? 11211);
+                    $class = 'Memcached';
+                    $m = new $class();
+                    $m->addServer($host, $port);
+                    $stats = $m->getStats();
+                    if (is_array($stats) && isset($stats[$host . ':' . $port])) {
+                        $this->client = $m;
+                        $this->type   = 'memcached';
                     } else {
-                        trigger_error("Memcached server unreachable. Falling back to disk cache.", E_USER_WARNING);
-                        $this->type = 'disk';
+                        trigger_error('Memcached unreachable; using disk cache.', E_USER_WARNING);
                     }
                 } else {
-                    trigger_error("Modern Memcached extension missing. Falling back to disk cache.", E_USER_WARNING);
-                    $this->type = 'disk';
+                    trigger_error('Memcached extension missing; using disk cache.', E_USER_WARNING);
                 }
                 break;
+        }
 
-            default:
-                $this->type = 'disk';
+        if ($this->type === 'disk' && !is_dir($this->cacheDir)) {
+            @mkdir($this->cacheDir, 0755, true);
         }
     }
 
-    /**
-     * Store data in cache
-     */
-    public function set(string $key, mixed $value, int $expire = 0): bool
+    public function set(string $key, mixed $value, int $expire = 3600): bool
     {
         if ($expire <= 0) {
             return false;
         }
 
-        $prefixedKey = $this->prefix . $key;
+        $k = $this->prefix . $key;
 
         switch ($this->type) {
             case 'apcu':
-                return apcu_store($prefixedKey, $value, $expire);
+                return (bool) call_user_func('apcu_store', $k, $value, $expire);
 
             case 'redis':
-                return $this->client->setEx($prefixedKey, $expire, serialize($value));
+                return (bool) $this->client->setEx($k, $expire, serialize($value));
 
             case 'memcached':
-                return $this->client->set($prefixedKey, $value, $expire);
+                return (bool) $this->client->set($k, $value, $expire);
 
-            case 'disk':
             default:
-                $filePath = $this->getDiskPath($key);
-                $data = [
+                $data = serialize([
                     'expires_at' => time() + $expire,
-                    'payload'    => $value
-                ];
-                // Atomic save to prevent race-condition file corruption
-                $tmpFile = tempnam($this->cacheDir, 'tmp_');
-                if ($tmpFile && file_put_contents($tmpFile, serialize($data)) !== false) {
-                    if (rename($tmpFile, $filePath)) {
+                    'payload'    => $value,
+                ]);
+                $path = $this->diskPath($key);
+                $tmp  = tempnam($this->cacheDir, 'tmp_');
+                if ($tmp && file_put_contents($tmp, $data) !== false) {
+                    if (is_file($path)) {
+                        @unlink($path);
+                    }
+                    if (@rename($tmp, $path)) {
                         return true;
                     }
                 }
-                @unlink($tmpFile);
+                if (!empty($tmp)) {
+                    @unlink($tmp);
+                }
                 return false;
         }
     }
 
-    /**
-     * Retrieve data from cache
-     */
     public function get(string $key): mixed
     {
-        $prefixedKey = $this->prefix . $key;
+        $k = $this->prefix . $key;
 
         switch ($this->type) {
             case 'apcu':
-                $success = false;
-                $data = apcu_fetch($prefixedKey, $success);
-                return $success ? $data : false;
+                $ok   = false;
+                $data = call_user_func_array('apcu_fetch', [$k, &$ok]);
+                return $ok ? $data : false;
 
             case 'redis':
-                $data = $this->client->get($prefixedKey);
+                $data = $this->client->get($k);
                 return $data !== false ? unserialize($data) : false;
 
             case 'memcached':
-                $data = $this->client->get($prefixedKey);
-                return $this->client->getResultCode() === \Memcached::RES_SUCCESS ? $data : false;
+                $data = $this->client->get($k);
+                // RES_SUCCESS = 0
+                return $this->client->getResultCode() === 0 ? $data : false;
 
-            case 'disk':
             default:
-                $filePath = $this->getDiskPath($key);
-                if (!file_exists($filePath)) {
+                $path = $this->diskPath($key);
+                if (!is_file($path)) {
                     return false;
                 }
-
-                $content = @file_get_contents($filePath);
+                $content = @file_get_contents($path);
                 if ($content === false) {
                     return false;
                 }
-
                 $data = @unserialize($content);
                 if (!is_array($data) || !isset($data['expires_at'], $data['payload'])) {
-                    $this->delete($key); // Corrupt file cleanup
+                    $this->delete($key);
                     return false;
                 }
-
                 if (time() > $data['expires_at']) {
-                    $this->delete($key); // Expired cache cleanup
+                    $this->delete($key);
                     return false;
                 }
-
                 return $data['payload'];
         }
     }
 
-    /**
-     * Delete data from cache
-     */
     public function delete(string $key): bool
     {
-        $prefixedKey = $this->prefix . $key;
+        $k = $this->prefix . $key;
 
         switch ($this->type) {
             case 'apcu':
-                return apcu_delete($prefixedKey);
+                return (bool) call_user_func('apcu_delete', $k);
 
             case 'redis':
-                return (bool)$this->client->del($prefixedKey);
+                return (bool) $this->client->del($k);
 
             case 'memcached':
-                return $this->client->delete($prefixedKey);
+                return (bool) $this->client->delete($k);
 
-            case 'disk':
             default:
-                $filePath = $this->getDiskPath($key);
-                if (file_exists($filePath)) {
-                    return @unlink($filePath);
-                }
-                return false;
+                $path = $this->diskPath($key);
+                return !is_file($path) || @unlink($path);
         }
     }
 
-    /**
-     * Generate file hash string to safe-guard against directory traversal attacks
-     */
-    private function getDiskPath(string $key): string
+    private function diskPath(string $key): string
     {
-        return $this->cacheDir . DIRECTORY_SEPARATOR . md5($key) . '.cache';
+        return $this->cacheDir . DIRECTORY_SEPARATOR . md5($this->prefix . $key) . '.cache';
     }
 }

@@ -28,14 +28,7 @@ class Router
         } elseif (is_file($adminFile)) {
             $class = 'App\\Controllers\\Admin\\' . $controllerName;
         } else {
-// inside dispatch(), when controller file missing:
-http_response_code(404);
-style_header(LANG['NOTHING_FOUND'] ?? 'Not found');
-style_begin_block(LANG['NOTHING_FOUND'] ?? 'Not found');
-style_error(LANG['NOTHING_FOUND'] ?? 'Page not found');
-style_end_block();
-style_footer();
-exit;
+            View::notFound();
         }
 
         // Create controller object
@@ -44,9 +37,12 @@ exit;
         // Default method
         $method = 'index';
 
-        if (isset($url[1]) && method_exists($controller, $url[1])) {
-            $method = $this->sanitize($url[1]);
-            unset($url[1]);
+        if (isset($url[1])) {
+            $candidate = $this->sanitize($url[1]);
+            if (method_exists($controller, $candidate)) {
+                $method = $candidate;
+                unset($url[1]);
+            }
         }
 
         // Remaining parts of the URL are parameters

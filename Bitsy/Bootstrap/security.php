@@ -51,7 +51,7 @@ function request(string $key, $default = null)
     return $_REQUEST[$key] ?? $default;
 }
 
-function clean($value)
+function clean(mixed $value)
 {
     if (is_array($value)) {
         return array_map('clean', $value);

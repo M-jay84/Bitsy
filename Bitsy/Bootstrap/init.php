@@ -23,11 +23,12 @@ if (session_status() !== PHP_SESSION_ACTIVE) {
     // Custom session name
     session_name('MBITSYSESSID');
     
-    session_start([
-        'cookie_httponly' => true,
-        'cookie_samesite' => 'Lax',
-        'use_strict_mode' => true,
-    ]);
+session_start([
+    'cookie_httponly' => true,
+    'cookie_samesite' => 'Lax',
+    'cookie_secure'   => (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off'),
+    'use_strict_mode' => true,
+]);
 }
 
 date_default_timezone_set('Europe/London');

@@ -1,84 +1,78 @@
 <?php
 
+declare(strict_types=1);
+
 namespace App\Libs;
 
-/*
- * Check IP, Proxies, Cloudflare, and VPN Connections
+/**
+ * Visitor IP: IPv4/IPv6, Cloudflare, optional trusted proxies.
+ * Default: CF-Connecting-IP or REMOTE_ADDR — no config required.
  */
 class Ip
 {
     /**
-     * Resolves the true visitor IP address, extracting it safely if behind Cloudflare or trusted proxies.
+     * Client IP for logging, bans, account limits.
      */
     public static function getIP(): string
     {
-        // 1. Check Cloudflare first (if using Cloudflare, this is highly reliable)
-        if (!empty($_SERVER['HTTP_CF_CONNECTING_IP']) && self::validIP($_SERVER['HTTP_CF_CONNECTING_IP'])) {
-            return $_SERVER['HTTP_CF_CONNECTING_IP'];
+        // Cloudflare edge sets this to the visitor IP
+        if (!empty($_SERVER['HTTP_CF_CONNECTING_IP'])) {
+            $cfIp = self::normalize($_SERVER['HTTP_CF_CONNECTING_IP']);
+            if (self::isValidIp($cfIp)) {
+                return $cfIp;
+            }
         }
 
-        // 2. Scan standard proxy headers ordered by commonality
-        $headers = [
-            'HTTP_CLIENT_IP',
-            'HTTP_X_FORWARDED_FOR',
-            'HTTP_X_FORWARDED',
-            'HTTP_X_CLUSTER_CLIENT_IP',
-            'HTTP_FORWARDED_FOR',
-            'HTTP_FORWARDED'
-        ];
-
-        foreach ($headers as $header) {
-            if (!empty($_SERVER[$header])) {
-                // Headers like X-Forwarded-For can contain a comma-separated chain of IPs
-                foreach (explode(',', $_SERVER[$header]) as $ip) {
-                    $ip = trim($ip);
-                    // Filter out local, private, or invalid IPs to find the real public origin
-                    if (self::validIP($ip)) {
+        // Optional: only if you put proxies in CONFIG['TRUSTED_PROXIES']
+        $remote = self::normalize($_SERVER['REMOTE_ADDR'] ?? '');
+        if ($remote !== '' && self::isTrustedProxy($remote)) {
+            foreach (['HTTP_X_FORWARDED_FOR', 'HTTP_X_REAL_IP', 'HTTP_CLIENT_IP'] as $header) {
+                if (empty($_SERVER[$header])) {
+                    continue;
+                }
+                foreach (explode(',', (string) $_SERVER[$header]) as $part) {
+                    $ip = self::normalize($part);
+                    if (self::isValidIp($ip)) {
                         return $ip;
                     }
                 }
             }
         }
 
-        // 3. Fallback to direct connection IP
-        return $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+        if ($remote !== '' && self::isValidIp($remote)) {
+            return $remote;
+        }
+
+        return '127.0.0.1';
     }
 
-    /**
-     * Validates if an IP is formatted correctly and is a PUBLIC address (ignores LAN/Private/Loopback ranges).
-     */
+    /** Valid IPv4 or IPv6 (including private/loopback for local dev). */
     public static function validIP(string $ip): bool
     {
-        // FILTER_FLAG_NO_PRIV_RANGE blocks private ranges (e.g. 10.0.0.0, 192.168.0.0, fe80::)
-        // FILTER_FLAG_NO_RES_RANGE blocks reserved system ranges
-        $flags = FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE;
+        return self::isValidIp(self::normalize($ip));
+    }
 
-        return (bool) filter_var($ip, FILTER_VALIDATE_IP, $flags);
+    /** Public only (no LAN / loopback). */
+    public static function validPublicIP(string $ip): bool
+    {
+        $ip = self::normalize($ip);
+        if ($ip === '') {
+            return false;
+        }
+
+        return (bool) filter_var(
+            $ip,
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+        );
     }
 
     /**
-     * Checks if the user is masking their true connection behind a proxy or VPN chain.
+     * Weak heuristic only — not proof of VPN. Optional to use.
      */
     public static function isUsingProxyOrVpn(): bool
     {
-        // If Cloudflare tells us a proxy was used to reach them
-        if (!empty($_SERVER['HTTP_CF_VISITOR']) && str_contains($_SERVER['HTTP_CF_VISITOR'], 'proxy')) {
-            return true;
-        }
-
-        // Check if any proxy headers are set, indicating a VPN/Proxy server forwarded the request
-        $proxyHeaders = [
-            'HTTP_CLIENT_IP',
-            'HTTP_X_FORWARDED_FOR',
-            'HTTP_X_FORWARDED',
-            'HTTP_CLUSTER_CLIENT_IP',
-            'HTTP_FORWARDED_FOR',
-            'HTTP_FORWARDED',
-            'HTTP_VIA',
-            'HTTP_X_PROXY_ID'
-        ];
-
-        foreach ($proxyHeaders as $header) {
+        foreach (['HTTP_VIA', 'HTTP_X_PROXY_ID', 'HTTP_PROXY_CONNECTION'] as $header) {
             if (!empty($_SERVER[$header])) {
                 return true;
             }
@@ -87,52 +81,135 @@ class Ip
         return false;
     }
 
-    /**
-     * Modernised IP Ban Check using native PHP range comparison (Works for IPv4 and IPv6 out of the box).
-     */
-    public static function checkIpBan(string $ip): void
+    public static function checkIpBan(?string $ip = null): void
     {
-        $bans_query = "SELECT first, last FROM `bans` WHERE type = ?";
-        $res = DB::run($bans_query, ['ip']);
+        $ip = $ip ?? self::getIP();
+        if (!self::validIP($ip)) {
+            return;
+        }
+
+        $res = DB::run('SELECT first, last FROM `bans` WHERE type = ?', ['ip']);
 
         foreach ($res as $row) {
-            if (self::ipInRange($ip, $row['first'], $row['last'])) {
-                header("HTTP/1.1 403 Forbidden");
-                echo '<html><head><title>Forbidden</title></head><body><h1>Forbidden</h1>Unauthorized IP address.</body></html>';
+            if (self::ipInRange($ip, (string) $row['first'], (string) $row['last'])) {
+                http_response_code(403);
+                header('Content-Type: text/html; charset=UTF-8');
+                echo '<!DOCTYPE html><html><head><title>Forbidden</title></head><body>';
+                echo '<h1>Forbidden</h1><p>Unauthorized IP address.</p></body></html>';
                 exit;
             }
         }
     }
 
-    /**
-     * Checks maximum concurrent accounts per IP.
-     */
     public static function checkIP(): void
     {
         $ip = self::getIP();
-        $user_query = "SELECT count(id) FROM `users` WHERE ip = ?";
-        $ipq = DB::run($user_query, [$ip])->fetchColumn();
+        $count = (int) DB::run(
+            'SELECT COUNT(id) FROM `users` WHERE ip = ?',
+            [$ip]
+        )->fetchColumn();
 
-        if ($ipq >= CONFIG['ACCOUNTMAX']) {
-            showMessage('login', LANG["IP_USED"]);
+        $max = (int) (CONFIG['ACCOUNTMAX'] ?? 1);
+        if ($count >= $max) {
+            showMessage('login', LANG['IP_USED'] ?? 'This IP is already in use!');
         }
     }
 
-    /**
-     * Pure PHP helper to check if an IP falls inside a start/end range natively (handles IPv4 and IPv6).
-     */
-    private static function ipInRange(string $ip, string $start, string $end): bool
+    public static function ipInRange(string $ip, string $start, string $end): bool
     {
-        $ip_packed = @inet_pton($ip);
-        $start_packed = @inet_pton($start);
-        $end_packed = @inet_pton($end);
+        $ipBin    = @inet_pton(self::normalize($ip));
+        $startBin = @inet_pton(self::normalize($start));
+        $endBin   = @inet_pton(self::normalize($end));
 
-        // Ensure all IPs were parsed correctly and are of the same type (IPv4 vs IPv6)
-        if (!$ip_packed || !$start_packed || !$end_packed || strlen($ip_packed) !== strlen($start_packed)) {
+        if ($ipBin === false || $startBin === false || $endBin === false) {
+            return false;
+        }
+        if (strlen($ipBin) !== strlen($startBin) || strlen($startBin) !== strlen($endBin)) {
             return false;
         }
 
-        // Standard string comparison works perfectly on packed binary formats
-        return ($ip_packed >= $start_packed && $ip_packed <= $end_packed);
+        return $ipBin >= $startBin && $ipBin <= $endBin;
+    }
+
+    // -------------------------------------------------------------------------
+
+    private static function normalize(string $ip): string
+    {
+        $ip = trim($ip);
+
+        if (preg_match('/^\[([a-fA-F0-9:]+)\](?::\d+)?$/', $ip, $m)) {
+            return $m[1];
+        }
+        if (preg_match('/^(\d{1,3}(?:\.\d{1,3}){3}):\d+$/', $ip, $m)) {
+            return $m[1];
+        }
+
+        return $ip;
+    }
+
+    private static function isValidIp(string $ip): bool
+    {
+        return $ip !== '' && filter_var($ip, FILTER_VALIDATE_IP) !== false;
+    }
+
+    /**
+     * Off by default: no TRUSTED_PROXIES (or empty) → never trust X-Forwarded-For.
+     * Only needed later if you add nginx/HAProxy in front.
+     */
+    private static function isTrustedProxy(string $ip): bool
+    {
+        $list = CONFIG['TRUSTED_PROXIES'] ?? null;
+        if (!is_array($list) || $list === []) {
+            return false;
+        }
+
+        foreach ($list as $trusted) {
+            $trusted = trim((string) $trusted);
+            if ($trusted === '') {
+                continue;
+            }
+            if ($ip === $trusted) {
+                return true;
+            }
+            if (str_contains($trusted, '/') && self::ipInCidr($ip, $trusted)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static function ipInCidr(string $ip, string $cidr): bool
+    {
+        [$subnet, $bits] = array_pad(explode('/', $cidr, 2), 2, null);
+        if ($subnet === null || $bits === null || !is_numeric($bits)) {
+            return false;
+        }
+
+        $ipBin     = @inet_pton(self::normalize($ip));
+        $subnetBin = @inet_pton(self::normalize($subnet));
+        if ($ipBin === false || $subnetBin === false || strlen($ipBin) !== strlen($subnetBin)) {
+            return false;
+        }
+
+        $maxBits = strlen($ipBin) * 8;
+        $bits    = (int) $bits;
+        if ($bits < 0 || $bits > $maxBits) {
+            return false;
+        }
+
+        $bytes = intdiv($bits, 8);
+        $rest  = $bits % 8;
+
+        if ($bytes > 0 && substr($ipBin, 0, $bytes) !== substr($subnetBin, 0, $bytes)) {
+            return false;
+        }
+        if ($rest === 0) {
+            return true;
+        }
+
+        $mask = chr((0xFF << (8 - $rest)) & 0xFF);
+
+        return ($ipBin[$bytes] & $mask) === ($subnetBin[$bytes] & $mask);
     }
 }

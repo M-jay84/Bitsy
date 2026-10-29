@@ -1,141 +1,177 @@
 <?php 
+
+declare(strict_types=1);
+
 namespace App\Libs;
 
 // Manually pull in the PHPMailer classes since we are not using Composer
-require_once 'PHPMailer/Exception.php';
-require_once 'PHPMailer/PHPMailer.php';
-require_once 'PHPMailer/SMTP.php';
+require_once APPROOT . "/App/Libs/PHPMailer/Exception.php";
+require_once APPROOT . "/App/Libs/PHPMailer/PHPMailer.php";
+require_once APPROOT . "/App/Libs/PHPMailer/SMTP.php";
 
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
 /**
- * Modernised TTMail Class
- * Supports PHPMailer (SMTP) and Native PHP Mail
+ * Mail helper: PHPMailer (SMTP) or native mail().
  */
-class TTMail 
+class TTMail
 {
-    private string $type;
-    private string $smtpHost;
+    private string $type = 'php';
+    private string $smtpHost = 'localhost';
     private int $smtpPort = 25;
     private bool $smtpAuth = false;
     private ?string $smtpUser = null;
     private ?string $smtpPass = null;
-    private string $smtpSecure = ''; // 'tls' or 'ssl'
+    private string $smtpSecure = '';
 
-    public function __construct() 
+    public function __construct()
     {
-        $mailType = defined('CONFIG') && isset(CONFIG['mail_type']) ? strtolower(CONFIG['mail_type']) : 'php';
+        $mailType = strtolower((string) (CONFIG['mail_type'] ?? 'php'));
 
-        // Treat 'pear' config as 'smtp' now that we have modernised the backend
-        if ($mailType === 'pear' || $mailType === 'smtp' || $mailType === 'phpmailer') {
-            $this->type = 'phpmailer';
-            $this->smtpHost = CONFIG['mail_smtp_host'] ?? 'localhost';
-            $this->smtpPort = (int)(CONFIG['mail_smtp_port'] ?? 25);
-            $this->smtpAuth = (bool)(CONFIG['mail_smtp_auth'] ?? false);
-            $this->smtpUser = CONFIG['mail_smtp_user'] ?? null;
-            $this->smtpPass = CONFIG['mail_smtp_pass'] ?? null;
-            
-            // Set encryption scheme based on port or config setting
-            $smtpSsl = CONFIG['mail_smtp_ssl'] ?? false;
-            if ($smtpSsl) {
-                $this->smtpSecure = ($this->smtpPort === 465) ? PHPMailer::ENCRYPTION_SMTPS : PHPMailer::ENCRYPTION_STARTTLS;
+        if (in_array($mailType, ['pear', 'smtp', 'phpmailer'], true)) {
+            $this->type       = 'phpmailer';
+            $this->smtpHost   = (string) (CONFIG['mail_smtp_host'] ?? 'localhost');
+            $this->smtpPort   = (int) (CONFIG['mail_smtp_port'] ?? 25);
+            $this->smtpAuth   = (bool) (CONFIG['mail_smtp_auth'] ?? false);
+            $this->smtpUser   = CONFIG['mail_smtp_user'] ?? null;
+            $this->smtpPass   = CONFIG['mail_smtp_pass'] ?? null;
+
+            if (!empty(CONFIG['mail_smtp_ssl'])) {
+                $this->smtpSecure = ($this->smtpPort === 465)
+                    ? PHPMailer::ENCRYPTION_SMTPS
+                    : PHPMailer::ENCRYPTION_STARTTLS;
             }
-        } else {
-            $this->type = 'php';
         }
     }
 
-    /**
-     * Sends an email using the configured driver
-     */
-    public function send(string $to, string $subject, string $message, string $additionalHeaders = "", string $additionalParameters = ""): bool
-    {
-        $from = (defined('CONFIG') && isset(CONFIG['SITEEMAIL'])) ? CONFIG['SITEEMAIL'] : '';
-        if (preg_match("/^From:\s*(.*)$/im", $additionalHeaders, $matches)) {
-            $from = trim($matches[1]);
+    public function send(
+        string $to,
+        string $subject,
+        string $message,
+        string $additionalHeaders = '',
+        string $additionalParameters = ''
+    ): bool {
+        $to      = $this->sanitizeHeaderValue($to);
+        $subject = $this->sanitizeHeaderValue($subject);
+
+        if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
+            $this->log('Invalid recipient: ' . $to);
+            return false;
         }
 
-        // Clean up headers to prevent mail injection attacks
-        $cleanHeaders = preg_replace("/^From:\s*.*$/im", "", $additionalHeaders);
-        $cleanHeaders = trim($cleanHeaders);
+        $from = (string) (CONFIG['SITEEMAIL'] ?? '');
+        if (preg_match('/^From:\s*(.*)$/im', $additionalHeaders, $matches)) {
+            $from = trim($matches[1]);
+        }
+        $from = $this->sanitizeHeaderValue($from);
+        if ($from === '' || !filter_var($from, FILTER_VALIDATE_EMAIL)) {
+            $this->log('Invalid or missing From address');
+            return false;
+        }
+
+        $cleanHeaders = trim((string) preg_replace('/^From:\s*.*$/im', '', $additionalHeaders));
 
         if ($this->type === 'phpmailer') {
             return $this->sendViaPhpMailer($to, $subject, $message, $from, $cleanHeaders);
         }
 
-        return $this->sendViaNativePhp($to, $subject, $message, $from, $cleanHeaders, $additionalParameters);
+        // Do not forward arbitrary $additionalParameters unless you fully trust the caller
+        return $this->sendViaNativePhp($to, $subject, $message, $from, $cleanHeaders, '');
     }
 
-    /**
-     * Internal handler for PHPMailer SMTP
-     */
-    private function sendViaPhpMailer(string $to, string $subject, string $message, string $from, string $cleanHeaders): bool
-    {
-        $mail = new PHPMailer(true); // Passing true enables explicit exceptions
+    private function sendViaPhpMailer(
+        string $to,
+        string $subject,
+        string $message,
+        string $from,
+        string $cleanHeaders
+    ): bool {
+        $mail = new PHPMailer(true);
 
         try {
-            // Server settings
+            $mail->CharSet  = 'UTF-8';
+            $mail->Encoding = 'base64';
+
             $mail->isSMTP();
-            $mail->Host       = $this->smtpHost;
-            $mail->SMTPAuth   = $this->smtpAuth;
-            $mail->Username   = $this->smtpUser;
-            $mail->Password   = $this->smtpPass;
-            $mail->Port       = $this->smtpPort;
-            
-            if (!empty($this->smtpSecure)) {
+            $mail->Host     = $this->smtpHost;
+            $mail->Port     = $this->smtpPort;
+            $mail->SMTPAuth = $this->smtpAuth;
+            if ($this->smtpAuth) {
+                $mail->Username = (string) $this->smtpUser;
+                $mail->Password = (string) $this->smtpPass;
+            }
+            if ($this->smtpSecure !== '') {
                 $mail->SMTPSecure = $this->smtpSecure;
             }
 
-            // Recipients
-            $mail->setFrom($from);
+            $mail->setFrom($from, (string) (CONFIG['SITENAME'] ?? ''));
             $mail->addAddress($to);
-
-            // Content
             $mail->Subject = $subject;
-            
-            // If message contains HTML tags, send as HTML, otherwise fallback to plain text
+
             if ($message !== strip_tags($message)) {
                 $mail->isHTML(true);
                 $mail->Body    = $message;
                 $mail->AltBody = strip_tags($message);
             } else {
                 $mail->isHTML(false);
-                $mail->Body    = $message;
+                $mail->Body = $message;
             }
 
-            // Parse additional text headers if provided
-            if (!empty($cleanHeaders)) {
-                foreach (explode("\n", str_replace("\r", "", $cleanHeaders)) as $headerLine) {
+            if ($cleanHeaders !== '') {
+                foreach (explode("\n", str_replace("\r", '', $cleanHeaders)) as $headerLine) {
                     if (str_contains($headerLine, ':')) {
                         [$key, $value] = explode(':', $headerLine, 2);
-                        $mail->addCustomHeader(trim($key), trim($value));
+                        $mail->addCustomHeader(trim($key), $this->sanitizeHeaderValue(trim($value)));
                     }
                 }
             }
 
             return $mail->send();
         } catch (Exception $e) {
-            trigger_error("PHPMailer Error: " . $mail->ErrorInfo, E_USER_WARNING);
+            $this->log('PHPMailer: ' . $mail->ErrorInfo);
             return false;
         }
     }
 
-    /**
-     * Internal handler for PHP native mail()
-     */
-    private function sendViaNativePhp(string $to, string $subject, string $message, string $from, string $cleanHeaders, string $additionalParameters): bool
-    {
-        $nativeHeaders = [];
-        $nativeHeaders[] = "From: $from";
-        $nativeHeaders[] = "Return-Path: $from";
-        
-        if (!empty($cleanHeaders)) {
-            $nativeHeaders[] = $cleanHeaders;
+    private function sendViaNativePhp(
+        string $to,
+        string $subject,
+        string $message,
+        string $from,
+        string $cleanHeaders,
+        string $additionalParameters
+    ): bool {
+        $isHtml = $message !== strip_tags($message);
+        $headers = [
+            'From: ' . $from,
+            'MIME-Version: 1.0',
+            $isHtml
+                ? 'Content-Type: text/html; charset=UTF-8'
+                : 'Content-Type: text/plain; charset=UTF-8',
+        ];
+        if ($cleanHeaders !== '') {
+            $headers[] = $cleanHeaders;
         }
 
-        $headersString = implode("\r\n", $nativeHeaders);
+        $ok = mail($to, $subject, $message, implode("\r\n", $headers), $additionalParameters);
+        if (!$ok) {
+            $this->log('Native mail() failed for ' . $to);
+        }
+        return $ok;
+    }
 
-        return mail($to, $subject, $message, $headersString, $additionalParameters);
+    private function sanitizeHeaderValue(string $value): string
+    {
+        return trim(str_replace(["\r", "\n", "\0"], '', $value));
+    }
+
+    private function log(string $message): void
+    {
+        $line = sprintf("[%s] %s\n", date('Y-m-d H:i:s'), $message);
+        if (defined('LOG_PATH') && is_dir(LOG_PATH)) {
+            error_log($line, 3, LOG_PATH . DIRECTORY_SEPARATOR . 'mail_errors.log');
+        }
+        trigger_error('TTMail: ' . $message, E_USER_WARNING);
     }
 }

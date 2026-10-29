@@ -13,7 +13,7 @@ use App\Libs\Cache;
 class View
 {
     // Display View Template
-    public static function template($file, $data = [], $page = false)
+    public static function template(string $file, $data = [], $page = false)
     {
         //$session_id = isset($data['current_user']->id) ? $data['current_user']->id : 0;
         //if (!$session_id) {
@@ -25,12 +25,12 @@ class View
 
         $TTCache = new Cache();
 
-        if ($page == 'user' && file_exists("../App/Views/user/$file.php")) {
+        if ($page == 'user' && file_exists(APPROOT . "/App/Views/user/$file.php")) {
             $default_theme = (isset($_SESSION['stylesheet']) && $_SESSION['stylesheet']) != '' ? $_SESSION['stylesheet'] : 'inc';
             require_once VIEW_PATH . "/$default_theme/theme.php";
-        } elseif ($page == 'admin' && file_exists("../App/Views/admin/$file.php")) {
+        } elseif ($page == 'admin' && file_exists(APPROOT . "/App/Views/admin/$file.php")) {
             require_once VIEW_PATH . "/admin/admin-cp.php";
-        } elseif (file_exists("../App/Views/user/user-shoutboxload.php")) {
+        } elseif (file_exists(APPROOT . "/App/Views/user/user-shoutboxload.php")) {
             require_once VIEW_PATH . "/user/user-shoutboxload.php";
         } else {
             showMessage(URLROOT, "View $file does not exist");
@@ -53,7 +53,7 @@ class View
             Flash::set(LANG['NO_FILE'] ?? 'View not found', 'error');
             Redirect::to();
         }
- 
+
         // backend compat
         $page = $layout;
 
@@ -96,5 +96,20 @@ class View
             'warning' => style_warning($msg),
             default   => style_info($msg),
         };
+    }
+
+    /**
+     * Render a 404 page and stop.
+     */
+    public static function notFound(string $message = ''): never
+    {
+        http_response_code(404);
+
+        self::render('error_404', [
+            'TITLE'   => LANG['NOTHING_FOUND'] ?? 'Not found',
+            'MESSAGE' => $message !== '' ? $message : (LANG['NOTHING_FOUND'] ?? 'Page not found'),
+        ], 'user');
+
+        exit;
     }
 }

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Libs;
 
 use App\Libs\Flash;
+
 class Redirect
 {
     /**

@@ -6,7 +6,7 @@ declare(strict_types=1);
 // Once added availbe in mvc
 
 // Redidect Page
-function showMessage($url, $message1,$refresh = 3)
+function showMessage(string $url, string $message1, $refresh = 3)
 {
     if ($url != URLROOT) {
         $url = URLROOT . '/' . $url;
@@ -24,7 +24,7 @@ function showMessage($url, $message1,$refresh = 3)
 }
 
 // Get Redirect
-function Url($url = URLROOT, $go_to = false)
+function Url(string $url = URLROOT, $go_to = false)
 {
     if ($url != URLROOT) {
         $url = URLROOT . '/' . $url;

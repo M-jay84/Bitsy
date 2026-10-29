@@ -2,15 +2,12 @@
 
 declare(strict_types=1);
 
-// App Root
-define('APPROOT', '../');
+// Disk paths only — never echo these in HTML
+define('CACHE_PATH',      APPROOT . DIRECTORY_SEPARATOR . 'Bootstrap' . DIRECTORY_SEPARATOR . 'files' . DIRECTORY_SEPARATOR . 'cache');
+define('LOG_PATH',        APPROOT . DIRECTORY_SEPARATOR . 'Bootstrap' . DIRECTORY_SEPARATOR . 'files' . DIRECTORY_SEPARATOR . 'logs');
+define('UPLOAD_PATH',     APPROOT . DIRECTORY_SEPARATOR . 'Bootstrap' . DIRECTORY_SEPARATOR . 'files');
+define('VIEW_PATH',       APPROOT . DIRECTORY_SEPARATOR . 'App' . DIRECTORY_SEPARATOR . 'Views');
+define('CONTROLLER_PATH', APPROOT . DIRECTORY_SEPARATOR . 'App' . DIRECTORY_SEPARATOR . 'Controllers');
 
-// Paths
-define('CACHE_PATH', '../Bootstrap/files/cache');
-define('LOG_PATH', '../Bootstrap/files/logs');
-define('UPLOAD_PATH', '../Bootstrap/files');
-define('VIEW_PATH', '../App/Views');
-define('CONTROLLER_PATH', '../App/Controllers');
-
-// URL Root
+// Public URL base — must stay a URL, never a C:\ path.
 define('URLROOT', 'http://localhost/Bitsy');

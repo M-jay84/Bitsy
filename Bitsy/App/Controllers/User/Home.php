@@ -1,36 +1,25 @@
 <?php
 
-namespace App\Controllers\User;
+declare(strict_types=1);
 
+namespace App\Controllers\User;
 
 use App\Libs\View;
 
-/*
-* Default Controller (Home Page)
-*/
+// Default Controller (Home Page)
 class Home
 {
-
-    // Admincp Default Page
-    public function index()
+    public function index(): void
     {
-        echo 'Welcome to the User Home Page';
-		echo '<ul>
-		<li><a href="<?= e(URLROOT) ?>/home"><?= e('Home') ?></a></li>
-    <li><a href="<?= e(URLROOT) ?>/home/test"><?= e('Home Test') ?></a></li>
-    <li><a href="<?= e(URLROOT) ?>/test"><?= e('Test index') ?></a></li>
-    <li><a href="<?= e(URLROOT) ?>/test/second/42"><?= e('Test second with id') ?></a></li>
-    <li><a href="<?= e(URLROOT) ?>/test/flash"><?= e('Test flash message') ?></a></li>
-    <li><a href="<?= e(URLROOT) ?>/test/error"><?= e('Test error page (styled)') ?></a></li>
-</ul>';
+        View::render('home', [
+            'TITLE' => LANG['HOME'] ?? 'Home',
+        ], 'user');
     }
 
     public function test(): void
     {
-        
-        View::render('user-test', [
+        View::render('home_test', [
             'TITLE' => LANG['HOME'],
         ], 'user');
-        
     }
 }
